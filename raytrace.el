@@ -28,7 +28,11 @@
 
 ;;; Code:
 (require 'xcb)
+(require 'xcb-keysyms)
 (require 'color)
+
+(defvar raytrace-connection nil
+  "Connection with the X server.")
 
 ;; The ray-tracing algorithm is taken from
 ;; Paul Graham's book "ANSI Common Lisp"
@@ -132,19 +136,141 @@ P1 and P2 are lists of three elements."
 				    (- (float 0) (nth 2 raytrace-camera)))))
     (raytrace-send-ray raytrace-camera vect world)))
 
-(defun raytrace-tracer (name world)
-  (let ((l ()))
-    (dotimes (y 50)
-      (dotimes (x 50)
-	(push (raytrace-color-at x y world) l)))))
-
 ;; Copied algorithm ends here
+
+(defun raytrace--color-value-to-number (value)
+  (string-to-number
+   (substring (color-rgb-to-hex value value value) 1)
+   16))
+
+(defun raytrace--open-window (id w h root)
+  (let ((display (oref root root))
+	(visual (oref root root-visual))
+	(name (generate-new-buffer-name "RayTrace")))
+    (xcb:+request raytrace-connection
+	(make-instance xcb:CreateWindow
+		       :depth xcb:WindowClass:CopyFromParent
+		       :wid id
+		       :parent display
+		       :x 0 :y 0
+		       :width w
+		       :height h
+		       :border-width 1
+		       :class xcb:WindowClass:InputOutput
+		       :visual visual
+		       :value-mask (logior xcb:CW:BackPixel
+					   xcb:CW:EventMask)
+		       :background-pixel (raytrace--value-to-number 0.0)
+		       :event-mask (logior xcb:EventMask:Exposure
+					   xcb:EventMask:StructureNotify
+					   xcb:EventMask:KeyPress)))
+    (xcb:+request raytrace-connection
+	(make-instance xcb:ChangeProperty
+		       :mode xcb:PropMode:Replace
+		       :window id
+		       :property xcb:Atom:WM_NAME
+		       :type xcb:Atom:STRING
+		       :format 8
+		       :data-len (length name)
+		       :data name))
+    (xcb:+request raytrace-connection
+	(make-instance xcb:MapWindow
+		       :window id))))
+
+(defun raytrace--open-gc (id window)
+  (xcb:+request raytrace-connection
+      (make-instance xcb:CreateGC
+		     :cid id
+		     :drawable window
+		     :value-mask xcb:GC:Foreground
+		     :foreground (raytrace--value-to-number 0.0))))
+
+(defun raytrace-close (data fake)
+  (let ((ev (make-instance xcb:KeyPress)))
+    (xcb:unmarshal ev data)
+    (with-slots (detail event state) ev
+      (let ((key (xcb:keysyms:keycode->keysym raytrace-connection
+					      detail state)))
+	(when (or (eql key ?q) (eql key ?Q))
+	  (xcb:+request raytrace-connection
+	      (make-instance xcb:SendEvent
+			     :propagate 0
+			     :destination event
+			     :event-mask xcb:EventMask:StructureNotify
+			     :event (list
+				     (xcb:marshal
+				      (make-instance xcb:DestroyNotify
+						     :event event
+						     :window event)
+				      raytrace-connection))))
+	  (xcb:flush raytrace-connection))))))
+
+(defun raytrace-tracer (name world)
+  (let ((l ())
+	(w 150)
+	(h 150))
+    (dotimes (y h)
+      (dotimes (x w)
+	(push (raytrace-color-at x y world) l)))
+    (setq l (reverse l))
+    (unless raytrace-connection
+      (setq raytrace-connection (xcb:connect-to-socket))
+      (xcb:keysyms:init raytrace-connection))
+    (let ((setup (xcb:get-setup raytrace-connection))
+	  (window (xcb:generate-id raytrace-connection))
+	  (gc (xcb:generate-id raytrace-connection)))
+      (let ((screen (car (oref setup roots))))
+	(raytrace--open-window window w h screen)
+	(raytrace--open-gc gc window))
+      ;; There is probably a better way to pass values around
+      ;; without using global variables.
+      ;; Until then, closures.
+      (xcb:+event raytrace-connection xcb:DestroyNotify
+		  (lambda (a b)
+		    (xcb:+request raytrace-connection
+			(make-instance xcb:FreeGC
+				       :gc gc))
+		    (xcb:+request raytrace-connection
+			(make-instance xcb:DestroyWindow
+				       :window window))
+		    (xcb:flush raytrace-connection)))
+      (xcb:+event raytrace-connection xcb:Expose
+		  (lambda (a b)
+		    (dotimes (y h)
+		      (dotimes (x w)
+			(let ((pt (pop l)))
+			  (unless (or (null pt) (zerop pt))
+			    (xcb:+request raytrace-connection
+				(make-instance
+				 xcb:ChangeGC
+				 :gc gc
+				 :value-mask xcb:GC:Foreground
+				 :foreground (raytrace--color-value-to-number
+					      (pop l))))
+			    (xcb:+request raytrace-connection
+				(make-instance
+				 xcb:PolyPoint
+				 :coordinate-mode xcb:CoordMode:Origin
+				 :drawable window
+				 :gc gc
+				 :points (list
+					  (make-instance xcb:POINT
+							 :x x
+							 :y y)))))))
+		      (xcb:flush raytrace-connection))
+		    (xcb:flush raytrace-connection)))
+      (xcb:+event raytrace-connection xcb:KeyPress #'raytrace-close)
+      (xcb:flush raytrace-connection))))
+
+(defun raytrace-disconnect-all ()
+  (xcb:disconnect raytrace-connection)
+  (setq raytrace-connection nil))
 
 (defun raytrace-sphere (x y z r)
   (list (mapcar #'float (list x y z)) (float r)))
 
 (raytrace-tracer "test"
 		 (list (raytrace-sphere 12 10 12 10)
-		       (raytrace-sphere 13 11 24 19)))
+		       (raytrace-sphere 13 38 24 15)))
 
 ;;; raytrace.el ends here
