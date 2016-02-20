@@ -1,0 +1,6 @@
+2016-02-20  Alessio Vanni  <vannilla@firemail.cc>
+
+	* raytrace.el: Ray Tracing Algorithm
+	Added the ray tracing algorithm that serves as the
+	base of the whole system.
+
