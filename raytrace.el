@@ -133,12 +133,10 @@ P1 and P2 are lists of three elements."
     (raytrace-send-ray raytrace-camera vect world)))
 
 (defun raytrace-tracer (name world)
-  (with-current-buffer (get-buffer-create (generate-new-buffer-name name))
+  (let ((l ()))
     (dotimes (y 50)
       (dotimes (x 50)
-	(prin1 (raytrace-color-at x y world) (current-buffer))
-	(prin1 " " (current-buffer)))
-      (newline))))
+	(push (raytrace-color-at x y world) l)))))
 
 ;; Copied algorithm ends here
 
