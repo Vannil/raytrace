@@ -138,10 +138,9 @@ P1 and P2 are lists of three elements."
 
 ;; Copied algorithm ends here
 
-(defun raytrace--color-value-to-number (value)
-  (string-to-number
-   (substring (color-rgb-to-hex value value value) 1)
-   16))
+(defun raytrace--color-value-to-number (r g b)
+  (let ((color (color-rgb-to-hex r g b)))
+    (string-to-number (substring color 1) 16)))
 
 (defun raytrace--open-window (id w h root)
   (let ((display (oref root root))
@@ -160,7 +159,8 @@ P1 and P2 are lists of three elements."
 		       :visual visual
 		       :value-mask (logior xcb:CW:BackPixel
 					   xcb:CW:EventMask)
-		       :background-pixel (raytrace--value-to-number 0.0)
+		       :background-pixel (raytrace--color-value-to-number
+					  0.0 0.0 0.0)
 		       :event-mask (logior xcb:EventMask:Exposure
 					   xcb:EventMask:StructureNotify
 					   xcb:EventMask:KeyPress)))
@@ -183,7 +183,8 @@ P1 and P2 are lists of three elements."
 		     :cid id
 		     :drawable window
 		     :value-mask xcb:GC:Foreground
-		     :foreground (raytrace--value-to-number 0.0))))
+		     :foreground (raytrace--color-value-to-number
+				  0.0 0.0 0.0))))
 
 (defun raytrace-close (data fake)
   (let ((ev (make-instance xcb:KeyPress)))
@@ -205,17 +206,50 @@ P1 and P2 are lists of three elements."
 				      raytrace-connection))))
 	  (xcb:flush raytrace-connection))))))
 
+(defun raytrace-draw (list window gc)
+  (lambda (a b)
+    (let ((pt (pop list)))
+      (unless (null pt)
+	(message (format "%S" pt))
+	(let ((x (nth 0 pt))
+	      (y (nth 1 pt))
+	      (v (nth 2 pt)))
+	  (xcb:+request raytrace-connection
+	      (make-instance
+	       xcb:ChangeGC
+	       :gc gc
+	       :value-mask xcb:GC:Foreground
+	       :foreground (raytrace--color-value-to-number
+			    v v v)))
+	  (xcb:+request raytrace-connection
+	      (make-instance
+	       xcb:PolyPoint
+	       :coordinate-mode xcb:CoordMode:Origin
+	       :drawable window
+	       :gc gc
+	       :points (list
+			(make-instance xcb:POINT
+				       :x x
+				       :y y)))))))
+    (xcb:flush raytrace-connection)))
+
 (defun raytrace-tracer (name world)
   (let ((l ())
 	(w 150)
 	(h 150))
+    (message "Tracing...")
     (dotimes (y h)
       (dotimes (x w)
-	(push (raytrace-color-at x y world) l)))
-    (setq l (reverse l))
+	(let ((v (raytrace-color-at x y world)))
+	  (unless (zerop v)
+	    (push (list x y v) l)))))
+    (message "Tracing...done")
+;;    (setq l (reverse l))
     (unless raytrace-connection
+      (message "Connecting...")
       (setq raytrace-connection (xcb:connect-to-socket))
-      (xcb:keysyms:init raytrace-connection))
+      (xcb:keysyms:init raytrace-connection)
+      (message "Connecting...done"))
     (let ((setup (xcb:get-setup raytrace-connection))
 	  (window (xcb:generate-id raytrace-connection))
 	  (gc (xcb:generate-id raytrace-connection)))
@@ -227,6 +261,7 @@ P1 and P2 are lists of three elements."
       ;; Until then, closures.
       (xcb:+event raytrace-connection xcb:DestroyNotify
 		  (lambda (a b)
+		    (message "Closing...")
 		    (xcb:+request raytrace-connection
 			(make-instance xcb:FreeGC
 				       :gc gc))
@@ -234,36 +269,13 @@ P1 and P2 are lists of three elements."
 			(make-instance xcb:DestroyWindow
 				       :window window))
 		    (xcb:flush raytrace-connection)))
-      (xcb:+event raytrace-connection xcb:Expose
-		  (lambda (a b)
-		    (dotimes (y h)
-		      (dotimes (x w)
-			(let ((pt (pop l)))
-			  (unless (or (null pt) (zerop pt))
-			    (xcb:+request raytrace-connection
-				(make-instance
-				 xcb:ChangeGC
-				 :gc gc
-				 :value-mask xcb:GC:Foreground
-				 :foreground (raytrace--color-value-to-number
-					      (pop l))))
-			    (xcb:+request raytrace-connection
-				(make-instance
-				 xcb:PolyPoint
-				 :coordinate-mode xcb:CoordMode:Origin
-				 :drawable window
-				 :gc gc
-				 :points (list
-					  (make-instance xcb:POINT
-							 :x x
-							 :y y)))))))
-		      (xcb:flush raytrace-connection))
-		    (xcb:flush raytrace-connection)))
-      (xcb:+event raytrace-connection xcb:KeyPress #'raytrace-close)
-      (xcb:flush raytrace-connection))))
+      (xcb:+event raytrace-connection xcb:Expose (raytrace-draw l window gc))
+      (xcb:+event raytrace-connection xcb:KeyPress #'raytrace-close))
+    (xcb:flush raytrace-connection)))
 
 (defun raytrace-disconnect-all ()
-  (xcb:disconnect raytrace-connection)
+  (when raytrace-connection
+    (xcb:disconnect raytrace-connection))
   (setq raytrace-connection nil))
 
 (defun raytrace-sphere (x y z r)
@@ -272,5 +284,8 @@ P1 and P2 are lists of three elements."
 (raytrace-tracer "test"
 		 (list (raytrace-sphere 12 10 12 10)
 		       (raytrace-sphere 13 38 24 15)))
+
+(raytrace-disconnect-all)
+
 
 ;;; raytrace.el ends here
