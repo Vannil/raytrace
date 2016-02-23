@@ -71,11 +71,11 @@ P1 and P2 are lists of three elements."
 
 (defun raytrace-smallest-root (a b c)
   "Return the smallest number for which Ax²+Bx+C = 0."
-  (unless (zerop a)
-    (setf a (float a)
-	  b (float b)
-	  c (float c))
-    (/ (- c) b)
+  (setf a (float a)
+	b (float b)
+	c (float c))
+  (if (zerop a)
+      (/ (- c) b)
     (let ((delta (- (* b b) (* 4 a c))))
       (unless (minusp delta)
 	(let ((dsqrt (sqrt delta)))
@@ -212,28 +212,35 @@ P1 and P2 are lists of three elements."
 	  (xcb:flush raytrace-connection))))))
 
 (defun raytrace-draw (window gc list)
-  (dolist (pt list)
-    (let ((x (nth 0 pt))
-	  (y (nth 1 pt))
-	  (v (nth 2 pt)))
-      (xcb:+request raytrace-connection
-	  (make-instance
-	   xcb:ChangeGC
-	   :gc gc
-	   :value-mask xcb:GC:Foreground
-	   :foreground (raytrace--color-value-to-number
-			v v v)))
-      (xcb:+request raytrace-connection
-	  (make-instance
-	   xcb:PolyPoint
-	   :coordinate-mode xcb:CoordMode:Origin
-	   :drawable window
-	   :gc gc
-	   :points (list
-		    (make-instance xcb:POINT
-				   :x x
-				   :y y))))))
-  (xcb:flush raytrace-connection))
+  (message "Rendering...")
+  (let ((count 0))
+    (dolist (pt list)
+      (let ((x (nth 0 pt))
+	    (y (nth 1 pt))
+	    (v (nth 2 pt)))
+	(xcb:+request raytrace-connection
+	    (make-instance
+	     xcb:ChangeGC
+	     :gc gc
+	     :value-mask xcb:GC:Foreground
+	     :foreground (raytrace--color-value-to-number
+			  v v v)))
+	(xcb:+request raytrace-connection
+	    (make-instance
+	     xcb:PolyPoint
+	     :coordinate-mode xcb:CoordMode:Origin
+	     :drawable window
+	     :gc gc
+	     :points (list
+		      (make-instance xcb:POINT
+				     :x x
+				     :y y))))
+	(setq count (1+ count))
+	(when (>= count 10)
+	  (xcb:flush raytrace-connection)
+	  (setq count 0))))
+    (message "Rendering...done")
+    (xcb:flush raytrace-connection)))
 
 (defun raytrace-register-expose-callback (name callback gc lst)
   (push (list name gc lst callback) raytrace-expose-alist))
@@ -256,7 +263,10 @@ P1 and P2 are lists of three elements."
 	(funcall (nth 2 el) event (nth 1 el) (nth 0 el))))))
 
 (defun raytrace-delete-callback (name)
-  (setq raytrace-alist (delq (assoc name raytrace-alist) raytrace-alist)))
+  (setq raytrace-expose-alist
+	(delq (assoc name raytrace-expose-alist) raytrace-expose-alist))
+  (setq raytrace-destroy-alist
+	(delq (assoc name raytrace-destroy-alist) raytrace-destroy-alist)))
 
 (defun raytrace-destroy (window gc name)
   (message "Closing...")
@@ -296,8 +306,8 @@ P1 and P2 are lists of three elements."
       (let ((screen (car (oref setup roots))))
 	(raytrace--open-window window w h screen)
 	(raytrace--open-gc gc window)
-	(raytrace-register-expose-callback name gc l #'raytrace-draw)
-      (raytrace-register-destroy-callback name gc #'raytrace-destroy)))
+	(raytrace-register-expose-callback name #'raytrace-draw gc l)
+      (raytrace-register-destroy-callback name #'raytrace-destroy gc)))
     (xcb:flush raytrace-connection)))
 
 (defun raytrace-disconnect-all ()
@@ -307,11 +317,5 @@ P1 and P2 are lists of three elements."
 
 (defun raytrace-sphere (x y z r)
   (list (mapcar #'float (list x y z)) (float r)))
-
-(raytrace-tracer "test"
-		 (list (raytrace-sphere 20 30 24 10)
-		       (raytrace-sphere 13 38 24 25)))
-
-(raytrace-disconnect-all)
 
 ;;; raytrace.el ends here
