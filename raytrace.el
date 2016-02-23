@@ -34,6 +34,12 @@
 (defvar raytrace-connection nil
   "Connection with the X server.")
 
+(defvar raytrace-expose-alist nil
+  "Alist of expose event callbacks.")
+
+(defvar raytrace-destroy-alist nil
+  "Alist of destroy event callbacks.")
+
 ;; The ray-tracing algorithm is taken from
 ;; Paul Graham's book "ANSI Common Lisp"
 ;; It was changed a bit to better suit Emacs Lisp
@@ -198,40 +204,70 @@ P1 and P2 are lists of three elements."
 			     :propagate 0
 			     :destination event
 			     :event-mask xcb:EventMask:StructureNotify
-			     :event (list
-				     (xcb:marshal
+			     :event (xcb:marshal
 				      (make-instance xcb:DestroyNotify
 						     :event event
 						     :window event)
-				      raytrace-connection))))
+				      raytrace-connection)))
 	  (xcb:flush raytrace-connection))))))
 
-(defun raytrace-draw (list window gc)
-  (lambda (a b)
-    (let ((pt (pop list)))
-      (unless (null pt)
-	(message (format "%S" pt))
-	(let ((x (nth 0 pt))
-	      (y (nth 1 pt))
-	      (v (nth 2 pt)))
-	  (xcb:+request raytrace-connection
-	      (make-instance
-	       xcb:ChangeGC
-	       :gc gc
-	       :value-mask xcb:GC:Foreground
-	       :foreground (raytrace--color-value-to-number
-			    v v v)))
-	  (xcb:+request raytrace-connection
-	      (make-instance
-	       xcb:PolyPoint
-	       :coordinate-mode xcb:CoordMode:Origin
-	       :drawable window
-	       :gc gc
-	       :points (list
-			(make-instance xcb:POINT
-				       :x x
-				       :y y)))))))
-    (xcb:flush raytrace-connection)))
+(defun raytrace-draw (window gc list)
+  (dolist (pt list)
+    (let ((x (nth 0 pt))
+	  (y (nth 1 pt))
+	  (v (nth 2 pt)))
+      (xcb:+request raytrace-connection
+	  (make-instance
+	   xcb:ChangeGC
+	   :gc gc
+	   :value-mask xcb:GC:Foreground
+	   :foreground (raytrace--color-value-to-number
+			v v v)))
+      (xcb:+request raytrace-connection
+	  (make-instance
+	   xcb:PolyPoint
+	   :coordinate-mode xcb:CoordMode:Origin
+	   :drawable window
+	   :gc gc
+	   :points (list
+		    (make-instance xcb:POINT
+				   :x x
+				   :y y))))))
+  (xcb:flush raytrace-connection))
+
+(defun raytrace-register-expose-callback (name callback gc lst)
+  (push (list name gc lst callback) raytrace-expose-alist))
+
+(defun raytrace-register-destroy-callback (name callback gc)
+  (push (list name gc callback) raytrace-destroy-alist))
+
+(defun raytrace-draw-callback (a b)
+  (let ((ev (make-instance xcb:Expose)))
+    (xcb:unmarshal ev a)
+    (with-slots (window) ev
+      (dolist (el raytrace-expose-alist)
+	(funcall (nth 3 el) window (nth 1 el) (nth 2 el))))))
+
+(defun raytrace-destroy-callback (a b)
+  (let ((ev (make-instance xcb:DestroyNotify)))
+    (xcb:unmarshal ev a)
+    (with-slots (event) ev
+      (dolist (el raytrace-destroy-alist)
+	(funcall (nth 2 el) event (nth 1 el) (nth 0 el))))))
+
+(defun raytrace-delete-callback (name)
+  (setq raytrace-alist (delq (assoc name raytrace-alist) raytrace-alist)))
+
+(defun raytrace-destroy (window gc name)
+  (message "Closing...")
+  (xcb:+request raytrace-connection
+      (make-instance xcb:FreeGC
+		     :gc gc))
+  (xcb:+request raytrace-connection
+      (make-instance xcb:DestroyWindow
+		     :window window))
+  (xcb:flush raytrace-connection)
+  (raytrace-delete-callback name))
 
 (defun raytrace-tracer (name world)
   (let ((l ())
@@ -244,33 +280,24 @@ P1 and P2 are lists of three elements."
 	  (unless (zerop v)
 	    (push (list x y v) l)))))
     (message "Tracing...done")
-;;    (setq l (reverse l))
+    (setq l (reverse l))
     (unless raytrace-connection
       (message "Connecting...")
       (setq raytrace-connection (xcb:connect-to-socket))
       (xcb:keysyms:init raytrace-connection)
-      (message "Connecting...done"))
+      (message "Connecting...done")
+      (xcb:+event raytrace-connection xcb:DestroyNotify
+		  #'raytrace-destroy-callback)
+      (xcb:+event raytrace-connection xcb:Expose #'raytrace-draw-callback)
+      (xcb:+event raytrace-connection xcb:KeyPress #'raytrace-close))
     (let ((setup (xcb:get-setup raytrace-connection))
 	  (window (xcb:generate-id raytrace-connection))
 	  (gc (xcb:generate-id raytrace-connection)))
       (let ((screen (car (oref setup roots))))
 	(raytrace--open-window window w h screen)
-	(raytrace--open-gc gc window))
-      ;; There is probably a better way to pass values around
-      ;; without using global variables.
-      ;; Until then, closures.
-      (xcb:+event raytrace-connection xcb:DestroyNotify
-		  (lambda (a b)
-		    (message "Closing...")
-		    (xcb:+request raytrace-connection
-			(make-instance xcb:FreeGC
-				       :gc gc))
-		    (xcb:+request raytrace-connection
-			(make-instance xcb:DestroyWindow
-				       :window window))
-		    (xcb:flush raytrace-connection)))
-      (xcb:+event raytrace-connection xcb:Expose (raytrace-draw l window gc))
-      (xcb:+event raytrace-connection xcb:KeyPress #'raytrace-close))
+	(raytrace--open-gc gc window)
+	(raytrace-register-expose-callback name gc l #'raytrace-draw)
+      (raytrace-register-destroy-callback name gc #'raytrace-destroy)))
     (xcb:flush raytrace-connection)))
 
 (defun raytrace-disconnect-all ()
@@ -282,10 +309,9 @@ P1 and P2 are lists of three elements."
   (list (mapcar #'float (list x y z)) (float r)))
 
 (raytrace-tracer "test"
-		 (list (raytrace-sphere 12 10 12 10)
-		       (raytrace-sphere 13 38 24 15)))
+		 (list (raytrace-sphere 20 30 24 10)
+		       (raytrace-sphere 13 38 24 25)))
 
 (raytrace-disconnect-all)
-
 
 ;;; raytrace.el ends here
