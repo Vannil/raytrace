@@ -61,13 +61,9 @@ The vector is returned as a list of three elements."
 (defun raytrace-distance (p1 p2)
   "Return the distance between point P1 and point P2.
 P1 and P2 are lists of three elements."
-  (if (and p1 p2
-	   (listp p1) (listp p2)
-	   (eql (length p1) 3) (eql (length p2) 3))
-      (raytrace-vector-length (- (nth 0 p1) (nth 0 p2))
-			      (- (nth 1 p1) (nth 1 p2))
-			      (- (nth 2 p1) (nth 2 p2)))
-    (error "[Raytrace] Wrong arguments")))
+  (raytrace-vector-length (- (nth 0 p1) (nth 0 p2))
+			  (- (nth 1 p1) (nth 1 p2))
+			  (- (nth 2 p1) (nth 2 p2))))
 
 (defun raytrace-smallest-root (a b c)
   "Return the smallest number for which Ax²+Bx+C = 0."
