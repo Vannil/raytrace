@@ -1,3 +1,8 @@
+2016-02-23  Alessio Vanni  <vannilla@firemail.cc>
+
+	* raytrace.el: Rendering
+	Added rendering of the traced image.
+
 2016-02-20  Alessio Vanni  <vannilla@firemail.cc>
 
 	* raytrace.el: Ray Tracing Algorithm
